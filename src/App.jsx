@@ -1630,7 +1630,6 @@ export default function VitalCoach() {
                     🎯 Fréquence de résonance : {activeClient.resonanceFreq} resp/min ({(60/activeClient.resonanceFreq/2).toFixed(1)}s inspire / {(60/activeClient.resonanceFreq/2).toFixed(1)}s expire)
                   </div>
                 )}
-                </div>
               </Card>
             )}
 
