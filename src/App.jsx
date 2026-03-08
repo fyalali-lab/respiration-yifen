@@ -1213,7 +1213,7 @@ export default function VitalCoach() {
   const [coachNotes, setCoachNotes] = useState("");
 
   // --- QUESTIONNAIRES ---
-  const [preQ, setPreQ] = useState({ wellbeing: 3, stress: 3, sleep: 3, energy: 3, note: "" });
+  const [preQ, setPreQ] = useState({ wellbeing: 3, stress: 3, sleep: 3, energy: 3, position: "seated", note: "" });
   const [postQ, setPostQ] = useState({ wellbeing: 3, stress: 3, difficulty: 2, feltChange: 2, note: "" });
 
   // --- BREATHING ---
@@ -1271,7 +1271,10 @@ export default function VitalCoach() {
       const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: ["heart_rate"] }], optionalServices: ["battery_service"] });
       bleDeviceRef.current = dev;
       setDeviceName(dev.name || "Capteur BLE");
-      dev.addEventListener("gattserverdisconnected", () => { setBleStatus("off"); setDeviceName(""); setBattery(null); });
+      dev.addEventListener("gattserverdisconnected", () => {
+        setBleStatus("off"); setDeviceName(""); setBattery(null);
+        bleCharRef.current = null;
+      });
       const server = await dev.gatt.connect();
       const hrSvc = await server.getPrimaryService("heart_rate");
       const hrC = await hrSvc.getCharacteristic("heart_rate_measurement");
@@ -1280,7 +1283,29 @@ export default function VitalCoach() {
       bleCharRef.current = hrC;
       try { const bs = await server.getPrimaryService("battery_service"); const bc = await bs.getCharacteristic("battery_level"); const bv = await bc.readValue(); setBattery(bv.getUint8(0)); } catch {}
       setBleStatus("on");
-    } catch { setBleStatus("off"); }
+    } catch (err) {
+      console.error("BLE connect error:", err);
+      setBleStatus("off");
+    }
+  };
+
+  // Reconnect if device was paired but disconnected
+  const reconnectBLE = async () => {
+    if (!bleDeviceRef.current?.gatt) return false;
+    try {
+      setBleStatus("connecting");
+      const server = await bleDeviceRef.current.gatt.connect();
+      const hrSvc = await server.getPrimaryService("heart_rate");
+      const hrC = await hrSvc.getCharacteristic("heart_rate_measurement");
+      hrC.addEventListener("characteristicvaluechanged", parseHR);
+      await hrC.startNotifications();
+      bleCharRef.current = hrC;
+      setBleStatus("on");
+      return true;
+    } catch {
+      setBleStatus("off");
+      return false;
+    }
   };
 
   // ── DEMO DATA ──
@@ -1296,7 +1321,18 @@ export default function VitalCoach() {
   };
 
   // ── MEASUREMENT ──
-  const startMeasure = () => {
+  const [bleWarning, setBleWarning] = useState("");
+
+  const startMeasure = async () => {
+    setBleWarning("");
+    // Check if BLE is still connected, try reconnect if needed
+    if (!demoMode && bleStatus !== "on") {
+      const reconnected = await reconnectBLE();
+      if (!reconnected) {
+        setBleWarning("Connexion perdue. Vérifiez que la ceinture est portée et humidifiée, puis reconnectez.");
+        return;
+      }
+    }
     setRrData([]);
     setIsRecording(true);
     setMeasureStart(Date.now());
@@ -1547,8 +1583,8 @@ export default function VitalCoach() {
   const resetSession = () => {
     setSessionPhase("idle"); setPreMetrics(null); setPostMetrics(null);
     setPreReliability(null); setPostReliability(null); setPreDiag(null); setPostDiag(null);
-    setRrData([]); setBreathActive(false); setCoachNotes("");
-    setPreQ({ wellbeing: 3, stress: 3, sleep: 3, energy: 3, note: "" });
+    setRrData([]); setBreathActive(false); setCoachNotes(""); setBleWarning("");
+    setPreQ({ wellbeing: 3, stress: 3, sleep: 3, energy: 3, position: "seated", note: "" });
     setPostQ({ wellbeing: 3, stress: 3, difficulty: 2, feltChange: 2, note: "" });
     setLiveCoherence(null);
   };
@@ -1829,6 +1865,30 @@ export default function VitalCoach() {
               </Card>
             ))}
 
+            {/* Position pour la mesure */}
+            <Card style={{ marginBottom: "10px" }}>
+              <div style={{ fontSize: "12px", color: T.textMuted, marginBottom: "8px", textAlign: "center" }}>Position pendant la mesure</div>
+              <div style={{ display: "flex", gap: "6px", justifyContent: "center" }}>
+                {[["seated", "🪑 Assis"], ["standing", "🧍 Debout"], ["lying", "🛏️ Couché"]].map(([k, l]) => (
+                  <div key={k} onClick={() => setPreQ(p => ({ ...p, position: k }))}
+                    style={{
+                      flex: 1, padding: "10px 8px", borderRadius: "8px", textAlign: "center", cursor: "pointer",
+                      fontSize: "13px", fontWeight: 500, transition: "all 0.15s",
+                      background: preQ.position === k ? T.accentGlow : T.bgCard,
+                      border: `1px solid ${preQ.position === k ? T.accent + "40" : T.border}`,
+                      color: preQ.position === k ? T.accent : T.textMuted,
+                    }}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: "10px", color: T.textDim, textAlign: "center", marginTop: "6px" }}>
+                {preQ.position === "lying" ? "Position couchée : RMSSD naturellement plus élevé — l'app en tient compte" :
+                 preQ.position === "standing" ? "Position debout : RMSSD naturellement plus bas — stress orthostatique" :
+                 "Position assise : position standard de référence"}
+              </div>
+            </Card>
+
             <Card style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "12px", color: T.textMuted, marginBottom: "6px" }}>Remarque (optionnel)</div>
               <textarea value={preQ.note} onChange={e => setPreQ(p=>({...p, note: e.target.value}))}
@@ -1836,7 +1896,13 @@ export default function VitalCoach() {
                 style={{ width: "100%", padding: "10px", borderRadius: "8px", border: `1px solid ${T.border}`, background: T.bgCard, color: T.text, fontFamily: T.fontBody, fontSize: "13px", resize: "vertical", minHeight: "60px", outline: "none", boxSizing: "border-box" }} />
             </Card>
 
-            <Btn variant="primary" full onClick={() => { setSessionPhase("preMeasure"); startMeasure(); }}>
+            {bleWarning && (
+              <Card style={{ marginBottom: "12px", background: T.badBg, border: `1px solid ${T.bad}25` }}>
+                <div style={{ fontSize: "12px", color: "#fca5a5" }}>⚠️ {bleWarning}</div>
+              </Card>
+            )}
+
+            <Btn variant="primary" full onClick={async () => { await startMeasure(); if (bleWarning) return; setSessionPhase("preMeasure"); }}>
               Lancer la mesure pré-séance
             </Btn>
           </div>
@@ -1879,6 +1945,24 @@ export default function VitalCoach() {
               </Btn>
               {measureTime < 180 && (
                 <p style={{ fontSize: "11px", color: T.warn, marginTop: "8px" }}>⚠️ {180 - measureTime}s avant durée minimum</p>
+              )}
+              {!demoMode && measureTime > 10 && rrData.length === 0 && (
+                <Card style={{ marginTop: "12px", background: T.badBg, border: `1px solid ${T.bad}25`, textAlign: "left" }}>
+                  <div style={{ fontSize: "12px", color: "#fca5a5", marginBottom: "8px" }}>
+                    ⚠️ Aucune donnée reçue après {measureTime}s — la ceinture semble déconnectée
+                  </div>
+                  <div style={{ fontSize: "11px", color: T.textMuted, marginBottom: "8px", lineHeight: "1.5" }}>
+                    Vérifiez que la ceinture est bien en contact avec la peau et humidifiée. Essayez de la retirer et la remettre.
+                  </div>
+                  <Btn variant="secondary" onClick={async () => {
+                    clearInterval(timerRef.current);
+                    setIsRecording(false);
+                    const ok = await reconnectBLE();
+                    if (ok) { startMeasure(); setSessionPhase(sessionPhase); }
+                  }} style={{ fontSize: "12px" }}>
+                    🔄 Reconnecter et relancer
+                  </Btn>
+                </Card>
               )}
             </div>
           </div>
